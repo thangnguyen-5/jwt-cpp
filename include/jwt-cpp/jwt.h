@@ -102,15 +102,96 @@ namespace jwt {
 			static rsa_error_cat cat = {};
 			return cat;
 		}
-		
 		inline std::error_code make_error_code(rsa_error e) {
 			return {static_cast<int>(e), rsa_error_category()};
 		}
 
+		enum class signature_verification_error {
+			ok = 0,
+			invalid_signature = 10,
+			create_context_failed,
+			verifyinit_failed,
+			verifyupdate_failed,
+			verifyfinal_failed
+		};
+		inline std::error_category& signature_verification_error_category() {
+			class verification_error_cat : public std::error_category
+			{
+			public:
+				const char* name() const noexcept override { return "verification_error"; };
+				std::string message(int ev) const override {
+					switch(static_cast<signature_verification_error>(ev)) {
+					case signature_verification_error::ok: return "no error";
+					case signature_verification_error::invalid_signature: return "invalid signature";
+					case signature_verification_error::create_context_failed: return "failed to verify signature: could not create context";
+					case signature_verification_error::verifyinit_failed: return "failed to verify signature: VerifyInit failed";
+					case signature_verification_error::verifyupdate_failed: return "failed to verify signature: VerifyUpdate failed";
+					case signature_verification_error::verifyfinal_failed: return "failed to verify signature: VerifyFinal failed";
+					default: return "unknown error code";
+					}
+				}
+			};
+			static verification_error_cat cat = {};
+			return cat;
+		}
+		
+		inline std::error_code make_error_code(signature_verification_error e) {
+			return {static_cast<int>(e), signature_verification_error_category()};
+		}
+
+		enum class signature_generation_error {
+			ok = 0,
+			hmac_failed = 10,
+			create_context_failed,
+			signinit_failed,
+			signupdate_failed,
+			signfinal_failed,
+			ecdsa_do_sign_failed,
+			digestinit_failed,
+			digestupdate_failed,
+			digestfinal_failed,
+			rsa_padding_failed,
+			rsa_private_encrypt_failed
+		};
+		inline std::error_category& signature_generation_error_category() {
+			class signature_generation_error_cat : public std::error_category
+			{
+			public:
+				const char* name() const noexcept override { return "signature_generation_error"; };
+				std::string message(int ev) const override {
+					switch(static_cast<signature_generation_error>(ev)) {
+					case signature_generation_error::ok: return "no error";
+					case signature_generation_error::hmac_failed: return "hmac failed";
+					case signature_generation_error::create_context_failed: return "failed to create signature: could not create context";
+					case signature_generation_error::signinit_failed: return "failed to create signature: SignInit failed";
+					case signature_generation_error::signupdate_failed: return "failed to create signature: SignUpdate failed";
+					case signature_generation_error::signfinal_failed: return "failed to create signature: SignFinal failed";
+					case signature_generation_error::ecdsa_do_sign_failed: return "failed to generate ecdsa signature";
+					case signature_generation_error::digestinit_failed: return "failed to create signature: DigestInit failed";
+					case signature_generation_error::digestupdate_failed: return "failed to create signature: DigestUpdate failed";
+					case signature_generation_error::digestfinal_failed: return "failed to create signature: DigestFinal failed";
+					case signature_generation_error::rsa_padding_failed: return "failed to create signature: RSA_padding_add_PKCS1_PSS_mgf1 failed";
+					case signature_generation_error::rsa_private_encrypt_failed: return "failed to create signature: RSA_private_encrypt failed";
+					default: return "unknown error code";
+					}
+				}
+			};
+			static signature_generation_error_cat cat = {};
+			return cat;
+		}
+		
+		inline std::error_code make_error_code(signature_generation_error e) {
+			return {static_cast<int>(e), signature_generation_error_category()};
+		}
+
 		inline void throw_if_error(std::error_code ec) {
-			if(!ec) {
+			if(ec) {
 				if(ec.category() == rsa_error_category())
 					throw rsa_exception(ec.message());
+				if(ec.category() == signature_verification_error_category())
+					throw signature_verification_exception(ec.message());
+				if(ec.category() == signature_generation_error_category())
+					throw signature_generation_exception(ec.message());
 			}
 		}
 	}
@@ -119,6 +200,10 @@ namespace std
 {
 	template <>
 	struct is_error_code_enum<jwt::error::rsa_error> : true_type {};
+	template <>
+	struct is_error_code_enum<jwt::error::signature_verification_error> : true_type {};
+	template <>
+	struct is_error_code_enum<jwt::error::signature_generation_error> : true_type {};
 }
 namespace jwt {
 	namespace helper {
@@ -232,10 +317,21 @@ namespace jwt {
 			std::string sign(const std::string&) const {
 				return "";
 			}
+			/// Return an empty string
+			std::string sign(const std::string&, std::error_code& ec) const {
+				ec.clear();
+				return "";
+			}
 			/// Check if the given signature is empty. JWT's with "none" algorithm should not contain a signature.
 			void verify(const std::string&, const std::string& signature) const {
 				if (!signature.empty())
 					throw signature_verification_exception();
+			}
+			void verify(const std::string&, const std::string& signature, std::error_code& ec) const {
+				if (!signature.empty()) {
+					ec = error::signature_verification_error::invalid_signature;
+					return;
+				}
 			}
 			/// Get algorithm name
 			std::string name() const {
@@ -258,17 +354,51 @@ namespace jwt {
 			/**
 			 * Sign jwt data
 			 * \param data The data to sign
+			 * \param ec std::error_code filled with details on error
+			 * \return HMAC signature for the given data or empty string on error
+			 * \throws signature_generation_exception
+			 */
+			std::string sign(const std::string& data, std::error_code& ec) const {
+				std::string res;
+				res.resize(EVP_MAX_MD_SIZE);
+				unsigned int len = res.size();
+				if (HMAC(md(), secret.data(), secret.size(), (const unsigned char*)data.data(), data.size(), (unsigned char*)res.data(), &len) == nullptr) {
+					ec = error::signature_generation_error::hmac_failed;
+				}
+				res.resize(len);
+				return res;
+			}
+			/**
+			 * Sign jwt data
+			 * \param data The data to sign
 			 * \return HMAC signature for the given data
 			 * \throws signature_generation_exception
 			 */
 			std::string sign(const std::string& data) const {
-				std::string res;
-				res.resize(EVP_MAX_MD_SIZE);
-				unsigned int len = res.size();
-				if (HMAC(md(), secret.data(), secret.size(), (const unsigned char*)data.data(), data.size(), (unsigned char*)res.data(), &len) == nullptr)
-					throw signature_generation_exception();
-				res.resize(len);
+				std::error_code ec;
+				auto res = sign(data, ec);
+				error::throw_if_error(ec);
 				return res;
+			}
+			/**
+			 * Check if signature is valid
+			 * \param data The data to check signature against
+			 * \param signature Signature provided by the jwt
+			 * \param ec std::error_code filled with details if an error occured
+			 */
+			void verify(const std::string& data, const std::string& signature, std::error_code& ec) const {
+				auto res = sign(data, ec);
+				if(ec) return;
+				bool matched = true;
+				for (size_t i = 0; i < std::min<size_t>(res.size(), signature.size()); i++)
+					if (res[i] != signature[i])
+						matched = false;
+				if (res.size() != signature.size())
+					matched = false;
+				if (!matched) {
+					ec = error::signature_verification_error::invalid_signature;
+					return;
+				}
 			}
 			/**
 			 * Check if signature is valid
@@ -277,20 +407,9 @@ namespace jwt {
 			 * \throws signature_verification_exception If the provided signature does not match
 			 */
 			void verify(const std::string& data, const std::string& signature) const {
-				try {
-					auto res = sign(data);
-					bool matched = true;
-					for (size_t i = 0; i < std::min<size_t>(res.size(), signature.size()); i++)
-						if (res[i] != signature[i])
-							matched = false;
-					if (res.size() != signature.size())
-						matched = false;
-					if (!matched)
-						throw signature_verification_exception();
-				}
-				catch (const signature_generation_exception&) {
-					throw signature_verification_exception();
-				}
+				std::error_code ec;
+				verify(data, signature, ec);
+				error::throw_if_error(ec);
 			}
 			/**
 			 * Returns the algorithm name provided to the constructor
@@ -333,31 +452,85 @@ namespace jwt {
 			/**
 			 * Sign jwt data
 			 * \param data The data to sign
-			 * \return RSA signature for the given data
-			 * \throws signature_generation_exception
+			 * \param ec std::error_code filled with details on error
+			 * \return RSA signature for the given data or empty string on error
 			 */
-			std::string sign(const std::string& data) const {
+			std::string sign(const std::string& data, std::error_code& ec) const {
 #ifdef OPENSSL10
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_destroy)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_destroy);
 #else
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_free);
 #endif
-				if (!ctx)
-					throw signature_generation_exception("failed to create signature: could not create context");
-				if (!EVP_SignInit(ctx.get(), md()))
-					throw signature_generation_exception("failed to create signature: SignInit failed");
+				if (!ctx) {
+					ec = error::signature_generation_error::create_context_failed;
+					return "";
+				}
+				if (!EVP_SignInit(ctx.get(), md())) {
+					ec = error::signature_generation_error::signinit_failed;
+					return "";
+				}
 
 				std::string res;
 				res.resize(EVP_PKEY_size(pkey.get()));
 				unsigned int len = 0;
 
-				if (!EVP_SignUpdate(ctx.get(), data.data(), data.size()))
-					throw signature_generation_exception();
-				if (!EVP_SignFinal(ctx.get(), (unsigned char*)res.data(), &len, pkey.get()))
-					throw signature_generation_exception();
+				if (!EVP_SignUpdate(ctx.get(), data.data(), data.size())) {
+					ec = error::signature_generation_error::signupdate_failed;
+					return "";
+				}
+				if (!EVP_SignFinal(ctx.get(), (unsigned char*)res.data(), &len, pkey.get())) {
+					ec = error::signature_generation_error::signfinal_failed;
+					return "";
+				}
 
 				res.resize(len);
 				return res;
+			}
+			/**
+			 * Sign jwt data
+			 * \param data The data to sign
+			 * \return RSA signature for the given data
+			 * \throws signature_generation_exception
+			 */
+			std::string sign(const std::string& data) const {
+				std::error_code ec;
+				auto res = sign(data, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
+			/**
+			 * Check if signature is valid
+			 * \param data The data to check signature against
+			 * \param signature Signature provided by the jwt
+			 * \param ec std::error_code filled with details on error
+			 * \throws signature_verification_exception If the provided signature does not match
+			 */
+			void verify(const std::string& data, const std::string& signature, std::error_code& ec) const {
+#ifdef OPENSSL10
+				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_destroy)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_destroy);
+#else
+				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_free);
+#endif
+				if (!ctx) {
+					ec = error::signature_verification_error::create_context_failed;
+					return;
+				}
+				if (!EVP_VerifyInit(ctx.get(), md())) {
+					ec = error::signature_verification_error::verifyinit_failed;
+					return;
+				}
+				if (!EVP_VerifyUpdate(ctx.get(), data.data(), data.size())) {
+					ec = error::signature_verification_error::verifyupdate_failed;
+					return;
+				}
+				auto res = EVP_VerifyFinal(ctx.get(), (const unsigned char*)signature.data(), signature.size(), pkey.get());
+				if (res == 0) {
+					ec = error::signature_verification_error::invalid_signature;
+					return;
+				} else if(res < 0) {
+					ec = error::signature_verification_error::verifyfinal_failed;
+					return;
+				}
 			}
 			/**
 			 * Check if signature is valid
@@ -366,20 +539,9 @@ namespace jwt {
 			 * \throws signature_verification_exception If the provided signature does not match
 			 */
 			void verify(const std::string& data, const std::string& signature) const {
-#ifdef OPENSSL10
-				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_destroy)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_destroy);
-#else
-				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_create(), EVP_MD_CTX_free);
-#endif
-				if (!ctx)
-					throw signature_verification_exception("failed to verify signature: could not create context");
-				if (!EVP_VerifyInit(ctx.get(), md()))
-					throw signature_verification_exception("failed to verify signature: VerifyInit failed");
-				if (!EVP_VerifyUpdate(ctx.get(), data.data(), data.size()))
-					throw signature_verification_exception("failed to verify signature: VerifyUpdate failed");
-				auto res = EVP_VerifyFinal(ctx.get(), (const unsigned char*)signature.data(), signature.size(), pkey.get());
-				if (res != 1)
-					throw signature_verification_exception("evp verify final failed: " + std::to_string(res) + " " + ERR_error_string(ERR_get_error(), NULL));
+				std::error_code ec;
+				verify(data, signature, ec);
+				error::throw_if_error(ec);
 			}
 			/**
 			 * Returns the algorithm name provided to the constructor
@@ -445,16 +607,19 @@ namespace jwt {
 			/**
 			 * Sign jwt data
 			 * \param data The data to sign
-			 * \return ECDSA signature for the given data
-			 * \throws signature_generation_exception
+			 * \param ec std::error_code filled with details on error
+			 * \return ECDSA signature for the given data or empty string on error
 			 */
-			std::string sign(const std::string& data) const {
-				const std::string hash = generate_hash(data);
+			std::string sign(const std::string& data, std::error_code& ec) const {
+				const std::string hash = generate_hash(data, ec);
+				if(ec) return "";
 
 				std::unique_ptr<ECDSA_SIG, decltype(&ECDSA_SIG_free)>
 					sig(ECDSA_do_sign((const unsigned char*)hash.data(), hash.size(), pkey.get()), ECDSA_SIG_free);
-				if(!sig)
-					throw signature_generation_exception();
+				if(!sig){
+					ec = error::signature_generation_error::ecdsa_do_sign_failed;
+					return "";
+				}
 #ifdef OPENSSL10
 
 				return bn2raw(sig->r) + bn2raw(sig->s);
@@ -466,13 +631,25 @@ namespace jwt {
 #endif
 			}
 			/**
+			 * Sign jwt data
+			 * \param data The data to sign
+			 * \return ECDSA signature for the given data
+			 * \throws signature_generation_exception
+			 */
+			std::string sign(const std::string& data) const {
+				std::error_code ec;
+				auto res = sign(data, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
+			/**
 			 * Check if signature is valid
 			 * \param data The data to check signature against
 			 * \param signature Signature provided by the jwt
-			 * \throws signature_verification_exception If the provided signature does not match
+			 * \param ec std::error_code filled with details on error
 			 */
-			void verify(const std::string& data, const std::string& signature) const {
-				const std::string hash = generate_hash(data);
+			void verify(const std::string& data, const std::string& signature, std::error_code& ec) const {
+				const std::string hash = generate_hash(data, ec);
 				auto r = raw2bn(signature.substr(0, signature.size() / 2));
 				auto s = raw2bn(signature.substr(signature.size() / 2));
 
@@ -481,16 +658,29 @@ namespace jwt {
 				sig.r = r.get();
 				sig.s = s.get();
 
-				if(ECDSA_do_verify((const unsigned char*)hash.data(), hash.size(), &sig, pkey.get()) != 1)
-					throw signature_verification_exception("Invalid signature");
+				if(ECDSA_do_verify((const unsigned char*)hash.data(), hash.size(), &sig, pkey.get()) != 1) {
+					ec = error::signature_verification_error::invalid_signature;
+				}
 #else
 				ECDSA_SIG *sig = ECDSA_SIG_new();
 
 				ECDSA_SIG_set0(sig, r.get(), s.get());
 
-				if(ECDSA_do_verify((const unsigned char*)hash.data(), hash.size(), sig, pkey.get()) != 1)
-					throw signature_verification_exception("Invalid signature");
+				if(ECDSA_do_verify((const unsigned char*)hash.data(), hash.size(), sig, pkey.get()) != 1) {
+					ec = error::signature_verification_error::invalid_signature;
+				}
 #endif
+			}
+			/**
+			 * Check if signature is valid
+			 * \param data The data to check signature against
+			 * \param signature Signature provided by the jwt
+			 * \throws signature_verification_exception If the provided signature does not match
+			 */
+			void verify(const std::string& data, const std::string& signature) const {
+				std::error_code ec;
+				verify(data, signature, ec);
+				error::throw_if_error(ec);
 			}
 			/**
 			 * Returns the algorithm name provided to the constructor
@@ -537,21 +727,27 @@ namespace jwt {
 			 * \param data Data to hash
 			 * \return Hash of data
 			 */
-			std::string generate_hash(const std::string& data) const {
+			std::string generate_hash(const std::string& data, std::error_code& ec) const {
 #ifdef OPENSSL10
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_destroy)> ctx(EVP_MD_CTX_create(), &EVP_MD_CTX_destroy);
 #else
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
 #endif
-				if(EVP_DigestInit(ctx.get(), md()) == 0)
-					throw signature_generation_exception("EVP_DigestInit failed");
-				if(EVP_DigestUpdate(ctx.get(), data.data(), data.size()) == 0)
-					throw signature_generation_exception("EVP_DigestUpdate failed");
+				if(EVP_DigestInit(ctx.get(), md()) == 0) {
+					ec = error::signature_generation_error::digestinit_failed;
+					return "";
+				}
+				if(EVP_DigestUpdate(ctx.get(), data.data(), data.size()) == 0) {
+					ec = error::signature_generation_error::digestupdate_failed;
+					return "";
+				}
 				unsigned int len = 0;
 				std::string res;
 				res.resize(EVP_MD_CTX_size(ctx.get()));
-				if(EVP_DigestFinal(ctx.get(), (unsigned char*)res.data(), &len) == 0)
-					throw signature_generation_exception("EVP_DigestFinal failed");
+				if(EVP_DigestFinal(ctx.get(), (unsigned char*)res.data(), &len) == 0) {
+					ec = error::signature_generation_error::digestfinal_failed;
+					return "";
+				}
 				res.resize(len);
 				return res;
 			}
@@ -590,23 +786,64 @@ namespace jwt {
 			/**
 			 * Sign jwt data
 			 * \param data The data to sign
-			 * \return ECDSA signature for the given data
-			 * \throws signature_generation_exception
+			 * \param ec std::error_code filled with details on error
+			 * \return PSS signature for the given data or empty string on error
 			 */
-			std::string sign(const std::string& data) const {
-				auto hash = this->generate_hash(data);
+			std::string sign(const std::string& data, std::error_code& ec) const {
+				auto hash = this->generate_hash(data, ec);
+				if(ec) return "";
 
 				std::unique_ptr<RSA, decltype(&RSA_free)> key(EVP_PKEY_get1_RSA(pkey.get()), RSA_free);
 				const int size = RSA_size(key.get());
 
 				std::string padded(size, 0x00);
-				if (!RSA_padding_add_PKCS1_PSS_mgf1(key.get(), (unsigned char*)padded.data(), (const unsigned char*)hash.data(), md(), md(), -1))  
-					throw signature_generation_exception("failed to create signature: RSA_padding_add_PKCS1_PSS_mgf1 failed");
+				if (!RSA_padding_add_PKCS1_PSS_mgf1(key.get(), (unsigned char*)padded.data(), (const unsigned char*)hash.data(), md(), md(), -1)) {
+					ec = error::signature_generation_error::rsa_padding_failed;
+					return "";
+				}
 
 				std::string res(size, 0x00);
-				if (RSA_private_encrypt(size, (const unsigned char*)padded.data(), (unsigned char*)res.data(), key.get(), RSA_NO_PADDING) < 0)
-					throw signature_generation_exception("failed to create signature: RSA_private_encrypt failed");
+				if (RSA_private_encrypt(size, (const unsigned char*)padded.data(), (unsigned char*)res.data(), key.get(), RSA_NO_PADDING) < 0) {
+					ec = error::signature_generation_error::rsa_private_encrypt_failed;
+					return "";
+				}
 				return res;
+			}
+			/**
+			 * Sign jwt data
+			 * \param data The data to sign
+			 * \return PSS signature for the given data
+			 * \throws signature_generation_exception
+			 */
+			std::string sign(const std::string& data) const {
+				std::error_code ec;
+				auto res = sign(data, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
+			/**
+			 * Check if signature is valid
+			 * \param data The data to check signature against
+			 * \param signature Signature provided by the jwt
+			 * \param ec std::error_code filled with details on error
+			 */
+			void verify(const std::string& data, const std::string& signature, std::error_code& ec) const {
+				auto hash = this->generate_hash(data, ec);
+				if(ec) return;
+
+				std::unique_ptr<RSA, decltype(&RSA_free)> key(EVP_PKEY_get1_RSA(pkey.get()), RSA_free);
+				const int size = RSA_size(key.get());
+				
+				std::string sig(size, 0x00);
+				if(!RSA_public_decrypt(signature.size(), (const unsigned char*)signature.data(), (unsigned char*)sig.data(), key.get(), RSA_NO_PADDING)) {
+					ec = error::signature_verification_error::invalid_signature;
+					return;
+				}
+				
+				if(!RSA_verify_PKCS1_PSS_mgf1(key.get(), (const unsigned char*)hash.data(), md(), md(), (const unsigned char*)sig.data(), -1)) {
+					ec = error::signature_verification_error::invalid_signature;
+					return;
+				}
 			}
 			/**
 			 * Check if signature is valid
@@ -615,17 +852,9 @@ namespace jwt {
 			 * \throws signature_verification_exception If the provided signature does not match
 			 */
 			void verify(const std::string& data, const std::string& signature) const {
-				auto hash = this->generate_hash(data);
-
-				std::unique_ptr<RSA, decltype(&RSA_free)> key(EVP_PKEY_get1_RSA(pkey.get()), RSA_free);
-				const int size = RSA_size(key.get());
-				
-				std::string sig(size, 0x00);
-				if(!RSA_public_decrypt(signature.size(), (const unsigned char*)signature.data(), (unsigned char*)sig.data(), key.get(), RSA_NO_PADDING))
-					throw signature_verification_exception("Invalid signature");
-				
-				if(!RSA_verify_PKCS1_PSS_mgf1(key.get(), (const unsigned char*)hash.data(), md(), md(), (const unsigned char*)sig.data(), -1))
-					throw signature_verification_exception("Invalid signature");
+				std::error_code ec;
+				verify(data, signature, ec);
+				error::throw_if_error(ec);
 			}
 			/**
 			 * Returns the algorithm name provided to the constructor
@@ -640,21 +869,27 @@ namespace jwt {
 			 * \param data Data to hash
 			 * \return Hash of data
 			 */
-			std::string generate_hash(const std::string& data) const {
+			std::string generate_hash(const std::string& data, std::error_code& ec) const {
 #ifdef OPENSSL10
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_destroy)> ctx(EVP_MD_CTX_create(), &EVP_MD_CTX_destroy);
 #else
 				std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
 #endif
-				if(EVP_DigestInit(ctx.get(), md()) == 0)
-					throw signature_generation_exception("EVP_DigestInit failed");
-				if(EVP_DigestUpdate(ctx.get(), data.data(), data.size()) == 0)
-					throw signature_generation_exception("EVP_DigestUpdate failed");
+				if(EVP_DigestInit(ctx.get(), md()) == 0) {
+					ec = error::signature_generation_error::digestinit_failed;
+					return "";
+				}
+				if(EVP_DigestUpdate(ctx.get(), data.data(), data.size()) == 0) {
+					ec = error::signature_generation_error::digestupdate_failed;
+					return "";
+				}
 				unsigned int len = 0;
 				std::string res;
 				res.resize(EVP_MD_CTX_size(ctx.get()));
-				if(EVP_DigestFinal(ctx.get(), (unsigned char*)res.data(), &len) == 0)
-					throw signature_generation_exception("EVP_DigestFinal failed");
+				if(EVP_DigestFinal(ctx.get(), (unsigned char*)res.data(), &len) == 0) {
+					ec = error::signature_generation_error::digestfinal_failed;
+					return "";
+				}
 				res.resize(len);
 				return res;
 			}
@@ -1423,10 +1658,11 @@ namespace jwt {
 		/**
 		 * Sign token and return result
 		 * \param algo Instance of an algorithm to sign the token with
-		 * \return Final token as a string
+		 * \param ec std::error_code with details on error
+		 * \return Final token as a string or empty string on error
 		 */
 		template<typename T>
-		std::string sign(const T& algo) const {
+		std::string sign(const T& algo, std::error_code& ec) const {
 			picojson::object obj_header;
 			obj_header["alg"] = picojson::value(algo.name());
 			for (auto& e : header_claims) {
@@ -1449,7 +1685,22 @@ namespace jwt {
 
 			std::string token = header + "." + payload;
 
-			return token + "." + encode(algo.sign(token));
+			token += "." + encode(algo.sign(token, ec));
+			if(ec) return "";
+			return token;
+		}
+
+		/**
+		 * Sign token and return result
+		 * \param algo Instance of an algorithm to sign the token with
+		 * \return Final token as a string
+		 */
+		template<typename T>
+		std::string sign(const T& algo) const {
+			std::error_code ec;
+			auto res = sign<T>(algo, ec);
+			error::throw_if_error(ec);
+			return res;
 		}
 	};
 
@@ -1461,6 +1712,7 @@ namespace jwt {
 		struct algo_base {
 			virtual ~algo_base() {}
 			virtual void verify(const std::string& data, const std::string& sig) = 0;
+			virtual void verify(const std::string& data, const std::string& sig, std::error_code& ec) = 0;
 		};
 		template<typename T>
 		struct algo : public algo_base {
@@ -1468,6 +1720,9 @@ namespace jwt {
 			explicit algo(T a) : alg(a) {}
 			virtual void verify(const std::string& data, const std::string& sig) override {
 				alg.verify(data, sig);
+			}
+			virtual void verify(const std::string& data, const std::string& sig, std::error_code& ec) override {
+				alg.verify(data, sig, ec);
 			}
 		};
 
