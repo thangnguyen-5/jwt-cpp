@@ -141,6 +141,9 @@ TEST(TokenTest, VerifyTokenRS256) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenRS256PublicOnly) {
@@ -156,6 +159,9 @@ TEST(TokenTest, VerifyTokenRS256PublicOnly) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenRS256PrivateOnly) {
@@ -171,6 +177,9 @@ TEST(TokenTest, VerifyTokenRS256PrivateOnly) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 
@@ -187,6 +196,12 @@ TEST(TokenTest, VerifyTokenRS256Fail) {
 	auto decoded_token = jwt::decode(token);
 
 	ASSERT_THROW(verify.verify(decoded_token), jwt::signature_verification_exception);
+
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_TRUE(ec);
+	ASSERT_EQ(jwt::error::signature_verification_error_category(), ec.category());
+	ASSERT_EQ(static_cast<int>(jwt::error::signature_verification_error::invalid_signature), ec.value());
 }
 
 TEST(TokenTest, VerifyTokenRS512) {
@@ -201,6 +216,9 @@ TEST(TokenTest, VerifyTokenRS512) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenRS512PublicOnly) {
@@ -215,6 +233,9 @@ TEST(TokenTest, VerifyTokenRS512PublicOnly) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenRS512PrivateOnly) {
@@ -229,6 +250,9 @@ TEST(TokenTest, VerifyTokenRS512PrivateOnly) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenRS512Fail) {
@@ -243,6 +267,11 @@ TEST(TokenTest, VerifyTokenRS512Fail) {
 	auto decoded_token = jwt::decode(token);
 
 	ASSERT_THROW(verify.verify(decoded_token), jwt::signature_verification_exception);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_TRUE(ec);
+	ASSERT_EQ(jwt::error::signature_verification_error_category(), ec.category());
+	ASSERT_EQ(static_cast<int>(jwt::error::signature_verification_error::invalid_signature), ec.value());
 }
 
 TEST(TokenTest, VerifyTokenHS256) {
@@ -254,6 +283,9 @@ TEST(TokenTest, VerifyTokenHS256) {
 
 	auto decoded_token = jwt::decode(token);
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyFail) {
@@ -269,6 +301,11 @@ TEST(TokenTest, VerifyFail) {
 			.allow_algorithm(jwt::algorithm::none{})
 			.with_issuer("auth");
 		ASSERT_THROW(verify.verify(decoded_token), jwt::token_verification_exception);
+		std::error_code ec;
+		verify.verify(decoded_token, ec);
+		ASSERT_TRUE(ec);
+		ASSERT_EQ(jwt::error::token_verification_error_category(), ec.category());
+		ASSERT_EQ(static_cast<int>(jwt::error::token_verification_error::claim_value_missmatch), ec.value());
 	}
 	{
 		auto verify = jwt::verify()
@@ -276,6 +313,11 @@ TEST(TokenTest, VerifyFail) {
 			.with_issuer("auth0")
 			.with_audience({ "test" });
 		ASSERT_THROW(verify.verify(decoded_token), jwt::token_verification_exception);
+		std::error_code ec;
+		verify.verify(decoded_token, ec);
+		ASSERT_TRUE(ec);
+		ASSERT_EQ(jwt::error::token_verification_error_category(), ec.category());
+		ASSERT_EQ(static_cast<int>(jwt::error::token_verification_error::audience_missmatch), ec.value());
 	}
 	{
 		auto verify = jwt::verify()
@@ -283,6 +325,11 @@ TEST(TokenTest, VerifyFail) {
 			.with_issuer("auth0")
 			.with_subject("test");
 		ASSERT_THROW(verify.verify(decoded_token), jwt::token_verification_exception);
+		std::error_code ec;
+		verify.verify(decoded_token, ec);
+		ASSERT_TRUE(ec);
+		ASSERT_EQ(jwt::error::token_verification_error_category(), ec.category());
+		ASSERT_EQ(static_cast<int>(jwt::error::token_verification_error::missing_claim), ec.value());
 	}
 	{
 		auto verify = jwt::verify()
@@ -290,6 +337,11 @@ TEST(TokenTest, VerifyFail) {
 			.with_issuer("auth0")
 			.with_claim("myclaim", jwt::claim(std::string("test")));
 		ASSERT_THROW(verify.verify(decoded_token), jwt::token_verification_exception);
+		std::error_code ec;
+		verify.verify(decoded_token, ec);
+		ASSERT_TRUE(ec);
+		ASSERT_EQ(jwt::error::token_verification_error_category(), ec.category());
+		ASSERT_EQ(static_cast<int>(jwt::error::token_verification_error::missing_claim), ec.value());
 	}
 }
 
@@ -300,6 +352,9 @@ TEST(TokenTest, VerifyTokenES256) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenES256Fail) {
@@ -325,6 +380,9 @@ TEST(TokenTest, VerifyTokenPS256) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenPS256PublicOnly) {
@@ -340,6 +398,9 @@ TEST(TokenTest, VerifyTokenPS256PublicOnly) {
 	auto decoded_token = jwt::decode(token);
 
 	verify.verify(decoded_token);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_FALSE(ec);
 }
 
 TEST(TokenTest, VerifyTokenPS256Fail) {
@@ -355,6 +416,11 @@ TEST(TokenTest, VerifyTokenPS256Fail) {
 	auto decoded_token = jwt::decode(token);
 
 	ASSERT_THROW(verify.verify(decoded_token), jwt::signature_verification_exception);
+	std::error_code ec;
+	verify.verify(decoded_token, ec);
+	ASSERT_TRUE(ec);
+	ASSERT_EQ(jwt::error::signature_verification_error_category(), ec.category());
+	ASSERT_EQ(static_cast<int>(jwt::error::signature_verification_error::invalid_signature), ec.value());
 }
 
 namespace {

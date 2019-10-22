@@ -211,6 +211,41 @@ namespace jwt {
 			return {static_cast<int>(e), decode_error_category()};
 		}
 
+		enum class token_verification_error {
+			ok = 0,
+			wrong_algorithm,
+			missing_claim,
+			claim_type_missmatch,
+			claim_value_missmatch,
+			token_expired,
+			audience_missmatch
+		};
+		inline std::error_category& token_verification_error_category() {
+			class token_verification_error_cat : public std::error_category
+			{
+			public:
+				const char* name() const noexcept override { return "token_verification_error"; };
+				std::string message(int ev) const override {
+					switch(static_cast<token_verification_error>(ev)) {
+					case token_verification_error::ok: return "no error";
+					case token_verification_error::wrong_algorithm: return "wrong algorithm";
+					case token_verification_error::missing_claim: return "decoded_jwt is missing required claim";
+					case token_verification_error::claim_type_missmatch: return "claim type does not match expected type";
+					case token_verification_error::claim_value_missmatch: return "claim value does not match expected value";
+					case token_verification_error::token_expired: return "token expired";
+					case token_verification_error::audience_missmatch: return "token doesn't contain the required audience";
+					default: return "unknown error code";
+					}
+				}
+			};
+			static token_verification_error_cat cat = {};
+			return cat;
+		}
+		
+		inline std::error_code make_error_code(token_verification_error e) {
+			return {static_cast<int>(e), token_verification_error_category()};
+		}
+
 		inline void throw_if_error(std::error_code ec) {
 			if(ec) {
 				if(ec.category() == rsa_error_category())
@@ -225,6 +260,8 @@ namespace jwt {
 				}
 				if(ec.category() == base64_error_category())
 					throw std::runtime_error(ec.message());
+				if(ec.category() == token_verification_error_category())
+					throw token_verification_exception(ec.message());
 			}
 		}
 	}
@@ -239,6 +276,8 @@ namespace std
 	struct is_error_code_enum<jwt::error::signature_generation_error> : true_type {};
 	template <>
 	struct is_error_code_enum<jwt::error::decode_error> : true_type {};
+	template <>
+	struct is_error_code_enum<jwt::error::token_verification_error> : true_type {};
 }
 namespace jwt {
 	namespace helper {
@@ -1840,43 +1879,58 @@ namespace jwt {
 		/**
 		 * Verify the given token.
 		 * \param jwt Token to check
-		 * \throws token_verification_exception Verification failed
+		 * \param ec std::error_code with details on error
 		 */
-		void verify(const decoded_jwt& jwt) const {
+		void verify(const decoded_jwt& jwt, std::error_code& ec) const {
 			const std::string data = jwt.get_header_base64() + "." + jwt.get_payload_base64();
 			const std::string sig = jwt.get_signature();
 			const std::string& algo = jwt.get_algorithm();
-			if (algs.count(algo) == 0)
-				throw token_verification_exception("wrong algorithm");
-			algs.at(algo)->verify(data, sig);
+			if (algs.count(algo) == 0) {
+				ec = error::token_verification_error::wrong_algorithm;
+				return;
+			}
+			algs.at(algo)->verify(data, sig, ec);
+			if(ec) return;
 
-			auto assert_claim_eq = [](const decoded_jwt& jwt, const std::string& key, const claim& c) {
-				if (!jwt.has_payload_claim(key))
-					throw token_verification_exception("decoded_jwt is missing " + key + " claim");
+			auto assert_claim_eq = [](const decoded_jwt& jwt, const std::string& key, const claim& c, std::error_code& ec) {
+				if (!jwt.has_payload_claim(key)) {
+					ec = error::token_verification_error::missing_claim;
+					return;
+				}
 				auto& jc = jwt.get_payload_claim(key);
-				if (jc.get_type() != c.get_type())
-					throw token_verification_exception("claim " + key + " type mismatch");
+				if (jc.get_type() != c.get_type()) {
+					ec = error::token_verification_error::claim_type_missmatch;
+					return;
+				}
 				if (c.get_type() == claim::type::int64) {
-					if (c.as_date() != jc.as_date())
-						throw token_verification_exception("claim " + key + " does not match expected");
+					if (c.as_date() != jc.as_date()) {
+						ec = error::token_verification_error::claim_value_missmatch;
+						return;
+					}
 				}
 				else if (c.get_type() == claim::type::array) {
 					auto s1 = c.as_set();
 					auto s2 = jc.as_set();
-					if (s1.size() != s2.size())
-						throw token_verification_exception("claim " + key + " does not match expected");
+					if (s1.size() != s2.size()) {
+						ec = error::token_verification_error::claim_value_missmatch;
+						return;
+					}
 					auto it1 = s1.cbegin();
 					auto it2 = s2.cbegin();
 					while (it1 != s1.cend() && it2 != s2.cend()) {
-						if (*it1++ != *it2++)
-							throw token_verification_exception("claim " + key + " does not match expected");
+						if (*it1++ != *it2++) {
+							ec = error::token_verification_error::claim_value_missmatch;
+							return;
+						}
 					}
 				}
 				else if (c.get_type() == claim::type::string) {
-					if (c.as_string() != jc.as_string())
-						throw token_verification_exception("claim " + key + " does not match expected");
+					if (c.as_string() != jc.as_string()) {
+						ec = error::token_verification_error::claim_value_missmatch;
+						return;
+					}
 				}
-				else throw token_verification_exception("internal error");
+				else throw std::logic_error("internal error, this should not be reachable");
 			};
 
 			auto time = clock.now();
@@ -1884,20 +1938,26 @@ namespace jwt {
 			if (jwt.has_expires_at()) {
 				auto leeway = claims.count("exp") == 1 ? std::chrono::system_clock::to_time_t(claims.at("exp").as_date()) : default_leeway;
 				auto exp = jwt.get_expires_at();
-				if (time > exp + std::chrono::seconds(leeway))
-					throw token_verification_exception("token expired");
+				if (time > exp + std::chrono::seconds(leeway)) {
+					ec = error::token_verification_error::token_expired;
+					return;
+				}
 			}
 			if (jwt.has_issued_at()) {
 				auto leeway = claims.count("iat") == 1 ? std::chrono::system_clock::to_time_t(claims.at("iat").as_date()) : default_leeway;
 				auto iat = jwt.get_issued_at();
-				if (time < iat - std::chrono::seconds(leeway))
-					throw token_verification_exception("token expired");
+				if (time < iat - std::chrono::seconds(leeway)) {
+					ec = error::token_verification_error::token_expired;
+					return;
+				}
 			}
 			if (jwt.has_not_before()) {
 				auto leeway = claims.count("nbf") == 1 ? std::chrono::system_clock::to_time_t(claims.at("nbf").as_date()) : default_leeway;
 				auto nbf = jwt.get_not_before();
-				if (time < nbf - std::chrono::seconds(leeway))
-					throw token_verification_exception("token expired");
+				if (time < nbf - std::chrono::seconds(leeway)) {
+					ec = error::token_verification_error::token_expired;
+					return;
+				}
 			}
 			for (auto& c : claims)
 			{
@@ -1905,19 +1965,37 @@ namespace jwt {
 					// Nothing to do here, already checked
 				}
 				else if (c.first == "aud") {
-					if (!jwt.has_audience())
-						throw token_verification_exception("token doesn't contain the required audience");
+					if (!jwt.has_audience()) {
+						ec = error::token_verification_error::audience_missmatch;
+						return;
+					}
 					auto aud = jwt.get_audience();
 					auto expected = c.second.as_set();
-					for (auto& e : expected)
-						if (aud.count(e) == 0)
-							throw token_verification_exception("token doesn't contain the required audience");
+					for (auto& e : expected) {
+						if (aud.count(e) == 0){
+							ec = error::token_verification_error::audience_missmatch;
+							return;
+						}
+					}
 				}
 				else {
-					assert_claim_eq(jwt, c.first, c.second);
+					assert_claim_eq(jwt, c.first, c.second, ec);
+					if(ec) return;
 				}
 			}
 		}
+
+		/**
+		 * Verify the given token.
+		 * \param jwt Token to check
+		 * \throws token_verification_exception Verification failed
+		 */
+		void verify(const decoded_jwt& jwt) const {
+			std::error_code ec;
+			verify(jwt, ec);
+			error::throw_if_error(ec);
+		}
+			
 	};
 
 	/**
