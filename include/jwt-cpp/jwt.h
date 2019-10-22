@@ -184,6 +184,33 @@ namespace jwt {
 			return {static_cast<int>(e), signature_generation_error_category()};
 		}
 
+		enum class decode_error {
+			ok = 0,
+			invalid_token_format,
+			invalid_json
+		};
+		inline std::error_category& decode_error_category() {
+			class decode_error_cat : public std::error_category
+			{
+			public:
+				const char* name() const noexcept override { return "decode_error"; };
+				std::string message(int ev) const override {
+					switch(static_cast<decode_error>(ev)) {
+					case decode_error::ok: return "no error";
+					case decode_error::invalid_token_format: return "invalid token format";
+					case decode_error::invalid_json: return "invalid json";
+					default: return "unknown error code";
+					}
+				}
+			};
+			static decode_error_cat cat = {};
+			return cat;
+		}
+		
+		inline std::error_code make_error_code(decode_error e) {
+			return {static_cast<int>(e), decode_error_category()};
+		}
+
 		inline void throw_if_error(std::error_code ec) {
 			if(ec) {
 				if(ec.category() == rsa_error_category())
@@ -192,6 +219,12 @@ namespace jwt {
 					throw signature_verification_exception(ec.message());
 				if(ec.category() == signature_generation_error_category())
 					throw signature_generation_exception(ec.message());
+				if(ec.category() == decode_error_category()) {
+					if(static_cast<decode_error>(ec.value()) == decode_error::invalid_token_format) throw std::invalid_argument(ec.message());
+					throw std::runtime_error(ec.message());
+				}
+				if(ec.category() == base64_error_category())
+					throw std::runtime_error(ec.message());
 			}
 		}
 	}
@@ -204,9 +237,18 @@ namespace std
 	struct is_error_code_enum<jwt::error::signature_verification_error> : true_type {};
 	template <>
 	struct is_error_code_enum<jwt::error::signature_generation_error> : true_type {};
+	template <>
+	struct is_error_code_enum<jwt::error::decode_error> : true_type {};
 }
 namespace jwt {
 	namespace helper {
+		/**
+		 * Extract a public key from a pem certificate
+		 * \param certstr Certificate to extract from
+		 * \param pw Password of certificate
+		 * \param ec std::error_code filled with details on error
+		 * \return Extracted public key in pem format or empty string on error
+		 */
 		inline
 		std::string extract_pubkey_from_cert(const std::string& certstr, const std::string& pw, std::error_code& ec) {
 			// TODO: Cannot find the exact version this change happended
@@ -242,6 +284,13 @@ namespace jwt {
 			return res;
 		}
 
+		/**
+		 * Extract a public key from a pem certificate
+		 * \param certstr Certificate to extract from
+		 * \param pw Password of certificate
+		 * \return Extracted public key in pem format
+		 * \throws rsa_exception on error
+		 */
 		inline
 		std::string extract_pubkey_from_cert(const std::string& certstr, const std::string& pw = "") {
 			std::error_code ec;
@@ -250,11 +299,20 @@ namespace jwt {
 			return res;
 		}
 
+		/**
+		 * Load a pem public key from string.
+		 * You can also supply a certificate in which case it will extract and load the certs public key.
+		 * \param key Public key or certificate in pem format
+		 * \param password Password used to decrypt key
+		 * \param ec std::error_code filled with details on error
+		 * \return OpenSSL EVP_PKEY wrapped in a shared_ptr or nullptr on error
+		 */
 		inline
 		std::shared_ptr<EVP_PKEY> load_public_key_from_string(const std::string& key, const std::string& password, std::error_code& ec) {
 			std::unique_ptr<BIO, decltype(&BIO_free_all)> pubkey_bio(BIO_new(BIO_s_mem()), BIO_free_all);
 			if(key.substr(0, 27) == "-----BEGIN CERTIFICATE-----") {
-				auto epkey = helper::extract_pubkey_from_cert(key, password);
+				auto epkey = helper::extract_pubkey_from_cert(key, password, ec);
+				if(ec) return nullptr;
 				if ((size_t)BIO_write(pubkey_bio.get(), epkey.data(), epkey.size()) != epkey.size()) {
 					ec = error::rsa_error::load_pubkey_bio_write;
 					return nullptr;
@@ -274,6 +332,14 @@ namespace jwt {
 			return pkey;
 		}
 
+		/**
+		 * Load a pem public key from string.
+		 * You can also supply a certificate in which case it will extract and load the certs public key.
+		 * \param key Public key or certificate in pem format
+		 * \param password Password used to decrypt key
+		 * \return OpenSSL EVP_PKEY wrapped in a shared_ptr
+		 * \throws rsa_exception on error
+		 */
 		inline
 		std::shared_ptr<EVP_PKEY> load_public_key_from_string(const std::string& key, const std::string& password = "") {
 			std::error_code ec;
@@ -282,6 +348,13 @@ namespace jwt {
 			return res;
 		}
 
+		/**
+		 * Load a pem private key from string.
+		 * \param key Private key in pem format
+		 * \param password Password used to decrypt key
+		 * \param ec std::error_code filled with details on error
+		 * \return OpenSSL EVP_PKEY wrapped in a shared_ptr or nullptr on error
+		 */
 		inline
 		std::shared_ptr<EVP_PKEY> load_private_key_from_string(const std::string& key, const std::string& password, std::error_code& ec) {
 			std::unique_ptr<BIO, decltype(&BIO_free_all)> privkey_bio(BIO_new(BIO_s_mem()), BIO_free_all);
@@ -297,6 +370,13 @@ namespace jwt {
 			return pkey;
 		}
 
+		/**
+		 * Load a pem private key from string.
+		 * \param key Private key in pem format
+		 * \param password Password used to decrypt key
+		 * \return OpenSSL EVP_PKEY wrapped in a shared_ptr
+		 * \throws rsa_exception on error
+		 */
 		inline
 		std::shared_ptr<EVP_PKEY> load_private_key_from_string(const std::string& key, const std::string& password = "") {
 			std::error_code ec;
@@ -356,7 +436,6 @@ namespace jwt {
 			 * \param data The data to sign
 			 * \param ec std::error_code filled with details on error
 			 * \return HMAC signature for the given data or empty string on error
-			 * \throws signature_generation_exception
 			 */
 			std::string sign(const std::string& data, std::error_code& ec) const {
 				std::string res;
@@ -503,7 +582,6 @@ namespace jwt {
 			 * \param data The data to check signature against
 			 * \param signature Signature provided by the jwt
 			 * \param ec std::error_code filled with details on error
-			 * \throws signature_verification_exception If the provided signature does not match
 			 */
 			void verify(const std::string& data, const std::string& signature, std::error_code& ec) const {
 #ifdef OPENSSL10
@@ -725,6 +803,7 @@ namespace jwt {
 			/**
 			 * Hash the provided data using the hash function specified in constructor
 			 * \param data Data to hash
+			 * \param ec std::error_code filled with details on error
 			 * \return Hash of data
 			 */
 			std::string generate_hash(const std::string& data, std::error_code& ec) const {
@@ -867,6 +946,7 @@ namespace jwt {
 			/**
 			 * Hash the provided data using the hash function specified in constructor
 			 * \param data Data to hash
+			 * \param ec std::error_code filled with details on error
 			 * \return Hash of data
 			 */
 			std::string generate_hash(const std::string& data, std::error_code& ec) const {
@@ -1427,6 +1507,10 @@ namespace jwt {
 		std::unordered_map<std::string, claim> get_header_claims() const { return header_claims; }
 	};
 
+	class decoded_jwt;
+	inline decoded_jwt decode(const std::string& token);
+	inline std::unique_ptr<decoded_jwt> decode(const std::string& token, std::error_code& ec);
+
 	/**
 	 * Class containing all information about a decoded token
 	 */
@@ -1446,77 +1530,14 @@ namespace jwt {
 		std::string signature;
 		/// Unmodified signature part in base64
 		std::string signature_base64;
+
+		friend decoded_jwt decode(const std::string& token);
+		friend std::unique_ptr<decoded_jwt> decode(const std::string& token, std::error_code& ec);
+
+		decoded_jwt(const std::string& t)
+			: token(t)
+		{}
 	public:
-		/**
-		 * Constructor 
-		 * Parses a given token
-		 * \param token The token to parse
-		 * \throws std::invalid_argument Token is not in correct format
-		 * \throws std::runtime_error Base64 decoding failed or invalid json
-		 */
-		explicit decoded_jwt(const std::string& token)
-			: token(token)
-		{
-			auto hdr_end = token.find('.');
-			if (hdr_end == std::string::npos)
-				throw std::invalid_argument("invalid token supplied");
-			auto payload_end = token.find('.', hdr_end + 1);
-			if (payload_end == std::string::npos)
-				throw std::invalid_argument("invalid token supplied");
-			header = header_base64 = token.substr(0, hdr_end);
-			payload = payload_base64 = token.substr(hdr_end + 1, payload_end - hdr_end - 1);
-			signature = signature_base64 = token.substr(payload_end + 1);
-
-			// Fix padding: JWT requires padding to get removed
-			auto fix_padding = [](std::string& str) {
-				switch (str.size() % 4) {
-				case 1:
-					str += alphabet::base64url::fill();
-#ifdef __has_cpp_attribute
-#if __has_cpp_attribute(fallthrough)
-					[[fallthrough]];
-#endif
-#endif
-				case 2:
-					str += alphabet::base64url::fill();
-#ifdef __has_cpp_attribute
-#if __has_cpp_attribute(fallthrough)
-					[[fallthrough]];
-#endif
-#endif
-				case 3:
-					str += alphabet::base64url::fill();
-#ifdef __has_cpp_attribute
-#if __has_cpp_attribute(fallthrough)
-					[[fallthrough]];
-#endif
-#endif
-				default:
-					break;
-				}
-			};
-			fix_padding(header);
-			fix_padding(payload);
-			fix_padding(signature);
-
-			header = base::decode<alphabet::base64url>(header);
-			payload = base::decode<alphabet::base64url>(payload);
-			signature = base::decode<alphabet::base64url>(signature);
-
-			auto parse_claims = [](const std::string& str) {
-				std::unordered_map<std::string, claim> res;
-				picojson::value val;
-				if (!picojson::parse(val, str).empty())
-					throw std::runtime_error("Invalid json");
-
-				for (auto& e : val.get<picojson::object>()) { res.insert({ e.first, claim(e.second) }); }
-
-				return res;
-			};
-
-			header_claims = parse_claims(header);
-			payload_claims = parse_claims(payload);
-		}
 
 		/**
 		 * Get token string, as passed to constructor
@@ -1694,6 +1715,7 @@ namespace jwt {
 		 * Sign token and return result
 		 * \param algo Instance of an algorithm to sign the token with
 		 * \return Final token as a string
+		 * \throws Depending on the used algorithm a number of exception can be thrown.
 		 */
 		template<typename T>
 		std::string sign(const T& algo) const {
@@ -1943,6 +1965,93 @@ namespace jwt {
 	 */
     inline
 	decoded_jwt decode(const std::string& token) {
-		return decoded_jwt(token);
+		std::error_code ec;
+		auto r = decode(token, ec);
+		error::throw_if_error(ec);
+		if(!r) throw std::logic_error("internal error");
+		return *r;
+	}
+
+	/**
+	 * Decode a token
+	 * \param token Token to decode
+	 * \param ec std::error_code filled with details on error
+	 * \return Decoded token or nullptr on error
+	 */
+    inline
+	std::unique_ptr<decoded_jwt> decode(const std::string& token, std::error_code& ec) {
+		auto hdr_end = token.find('.');
+		if (hdr_end == std::string::npos) {
+			ec = error::decode_error::invalid_token_format;
+			return nullptr;
+		}
+		auto payload_end = token.find('.', hdr_end + 1);
+		if (payload_end == std::string::npos) {
+			ec = error::decode_error::invalid_token_format;
+			return nullptr;
+		}
+		std::unique_ptr<decoded_jwt> result(new decoded_jwt(token));
+		result->header = result->header_base64 = token.substr(0, hdr_end);
+		result->payload = result->payload_base64 = token.substr(hdr_end + 1, payload_end - hdr_end - 1);
+		result->signature = result->signature_base64 = token.substr(payload_end + 1);
+
+		// Fix padding: JWT requires padding to get removed
+		auto fix_padding = [](std::string& str) {
+			switch (str.size() % 4) {
+			case 1:
+				str += alphabet::base64url::fill();
+#ifdef __has_cpp_attribute
+#if __has_cpp_attribute(fallthrough)
+				[[fallthrough]];
+#endif
+#endif
+			case 2:
+				str += alphabet::base64url::fill();
+#ifdef __has_cpp_attribute
+#if __has_cpp_attribute(fallthrough)
+				[[fallthrough]];
+#endif
+#endif
+			case 3:
+				str += alphabet::base64url::fill();
+#ifdef __has_cpp_attribute
+#if __has_cpp_attribute(fallthrough)
+				[[fallthrough]];
+#endif
+#endif
+			default:
+				break;
+			}
+		};
+		fix_padding(result->header);
+		fix_padding(result->payload);
+		fix_padding(result->signature);
+
+		// TODO: Add error_code support to base header
+		result->header = base::decode<alphabet::base64url>(result->header, ec);
+		if(ec) return nullptr;
+		result->payload = base::decode<alphabet::base64url>(result->payload, ec);
+		if(ec) return nullptr;
+		result->signature = base::decode<alphabet::base64url>(result->signature, ec);
+		if(ec) return nullptr;
+
+		auto parse_claims = [](const std::string& str, std::error_code& ec) {
+			std::unordered_map<std::string, claim> res;
+			picojson::value val;
+			if (!picojson::parse(val, str).empty()) {
+				ec = error::decode_error::invalid_json;
+				return res;
+			}
+
+			for (auto& e : val.get<picojson::object>()) { res.insert({ e.first, claim(e.second) }); }
+
+			return res;
+		};
+
+		result->header_claims = parse_claims(result->header, ec);
+		if(ec) return nullptr;
+		result->payload_claims = parse_claims(result->payload, ec);
+		if(ec) return nullptr;
+		return result;
 	}
 }
