@@ -75,7 +75,7 @@ extern "C" {
 
 // experimental support for int64_t (see README.mkdn for detail)
 #ifdef PICOJSON_USE_INT64
-#define __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS 1
 #include <cerrno>
 #if __cplusplus >= 201103L
 #include <cinttypes>
@@ -1155,9 +1155,9 @@ template <> inline void swap(picojson::value &x, picojson::value &y) {
 
 inline std::istream &operator>>(std::istream &is, picojson::value &x) {
   picojson::set_last_error(std::string());
-  const std::string err(picojson::parse(x, is));
-  if (!err.empty()) {
-    picojson::set_last_error(err);
+  const std::string err_x(picojson::parse(x, is));
+  if (!err_x.empty()) {
+    picojson::set_last_error(err_x);
     is.setstate(std::ios::failbit);
   }
   return is;
