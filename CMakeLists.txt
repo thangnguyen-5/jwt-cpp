@@ -4,7 +4,7 @@ if(CMAKE_TOOLCHAIN_FILE)
    include(${CMAKE_TOOLCHAIN_FILE})
 endif()
 
-option(BUILD_TESTS "Configure CMake to build tests (or not)" ON)
+option(BUILD_TESTS "Configure CMake to build tests (or not)" OFF)
 option(EXTERNAL_PICOJSON "Use find_package() to locate the picojson header" OFF)
 option(NO_INSTALL_PICOJSON "Do not install the picojson header" OFF)
 
